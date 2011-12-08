@@ -206,7 +206,7 @@ class SMWUseWebServiceSpecial extends SpecialPage {
 		$html .= "<option value=\"".wfMsg('smw_wwsu_sort_order_asc')."\">".wfMsg('smw_wwsu_sort_order_asc')."</option>";
 		$html .= "<option value=\"".wfMsg('smw_wwsu_sort_order_desc')."\">".wfMsg('smw_wwsu_sort_order_desc')."</option>";
 		$html .= '</select>';
-		$html .= "</sption>";
+		$html .= "</span>";
 		$html .= '</p>';
 		
 		//template
