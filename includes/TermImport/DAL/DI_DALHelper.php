@@ -17,6 +17,13 @@
  *
  */
 
+/**
+ * @file
+ * @ingroup DITermImport
+ * 
+ * @author Ingo Steinbauer
+ */
+
 /*
  * Provides some static methods that are used by several DAL modules
  */
@@ -56,8 +63,8 @@ class DIDALHelper {
 	 * 		The name of the import that the term belongs to. Can be <null>.
 	 * @param string $term
 	 * 		The name of the term.
-	 * @param array<string> $importSets
-	 * 		An array of allowed import sets.
+	 * @param string $importSet
+	 * 		Name of an import set or empty string if all import sets are allowed
 	 * @param array(array<string>) $policy
 	 * 		An array with the keys 'terms', 'regex' and 'properties'. The value for
 	 * 		each key is an array of strings with terms, regular expressions and
@@ -69,23 +76,20 @@ class DIDALHelper {
 	public static function termMatchesRules($importSet, $term,
 			$givenImportSet, $policy) {
 
-		//echo('<pre>'.print_r($policy, true).'</pre>');
-				
 		// Check import set
 		if ($importSet != null && strlen(trim($givenImportSet)) > 0) {
-			
-			if (trim($importSet) == trim($givenImportSet)) {
+			if (trim($importSet) != trim($givenImportSet)) {
 				// Term belongs to the wrong import set.
 				return false;
 			}
 		}
-
+		
 		// Check term policy
 		$terms = $policy['terms'];
 		if (is_array($terms) && in_array($term, $terms)) {
 			return true;
 		}
-
+		
 		// Check regex policy
 		$regex = $policy['regex'];
 		if(is_array($regex)){

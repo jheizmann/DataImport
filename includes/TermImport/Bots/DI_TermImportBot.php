@@ -21,25 +21,28 @@
  * @file
  * @ingroup DITermImport
  * 
- * @author Thomas Schweitzer
+ * @author Thomas Schweitzer, Ingo Steinbauer
  */
 
 if ( !defined( 'MEDIAWIKI' ) ) die;
+
 //todo: change SGA so that this is not necessary anymore 
 global $sgagIP;
 require_once("$sgagIP/includes/SGA_GardeningBot.php");
 require_once("$sgagIP/includes/SGA_GardeningIssues.php");
 require_once("$sgagIP/includes/SGA_ParameterObjects.php");
 
+global $smwgHaloIP; 
+require_once("$smwgHaloIP/includes/SMW_OntologyManipulator.php");
+
 /**
  * This bot imports terms of an external vocabulary.
- *
  */
 class TermImportBot extends GardeningBot {
 
 	private $dateString = null;
 	private $importErrors = array();
-
+	
 	function __construct() {
 		parent::GardeningBot("smw_termimportbot");
 	}
@@ -51,10 +54,6 @@ class TermImportBot extends GardeningBot {
 	public function getLabel() {
 		return wfMsg($this->id);
 	}
-
-	//	public function allowedForUserGroups() {
-	//		return array(SMW_GARD_GARDENERS, SMW_GARD_SYSOPS, SMW_GARD_ALL_USERS);
-	//	}
 
 	/**
 	 * Returns an array of parameter objects
@@ -75,12 +74,6 @@ class TermImportBot extends GardeningBot {
 	public function run($paramArray, $isAsync, $delay) {
 		echo "\r\nBot executed!\n";
 		
-		// global $smwgDefaultStore;
-		// if($smwgDefaultStore == 'SMWTripleStore' || $smwgDefaultStore == 'SMWTripleStoreQuad'){
-		//	define('SMWH_FORCE_TS_UPDATE', 'TRUE');
-		//	smwfGetStore()->initialize(true);
-		//}
-		
 		$result = "";
 		
 		$termImportName = $paramArray["termImportName"];
@@ -97,19 +90,20 @@ class TermImportBot extends GardeningBot {
 		
 		$this->createTermImportResultContent($termImportName);
 		
+		//bot is executed in maintenaince mode in which no semantic data is stored to tsc
+		//therefore refresh tsc after bot is done
+		global $smwgDefaultStore;
+		if($smwgDefaultStore == 'SMWTripleStore' || $smwgDefaultStore == 'SMWTripleStoreQuad'){
+			define('SMWH_FORCE_TS_UPDATE', 'TRUE');
+			smwfGetStore()->initialize(true);
+		}
+		
 		return array($result, "TermImport:".$termImportName."/".$timeInTitle);
 	}
 
 	/**
 	 * This function sets up the modules of the import framework according to the
 	 * settings, reads the terms and creates articles for them.
-	 *
-	 * @param string name of the term import definition article
-	 *
-	 * @return mixed (boolean, string)
-	 * 		<true>, if all terms were successfully imported or an
-	 * 		error message, otherwise.
-	 *
 	 */
 	public function importTerms($termImportName) {
 		echo "\r\nStarting to import terms for $termImportName...\n";
@@ -126,7 +120,10 @@ class TermImportBot extends GardeningBot {
 			return $result;
 		}
 
-		$dalModule = $parser->getValuesOfElement(array('DALModules', 'Module', 'id'));
+		$dalModule = $parser->getValuesOfElement(array('DALModule', 'ID'));
+		if (count($dalModule) == 0) {
+			$dalModule = $parser->getValuesOfElement(array('DALModules', 'Module', 'id'));
+		}
 		if (count($dalModule) == 0) {
 			//todo: language
 			return "Error: Data access layer module was not defined."; 
@@ -137,19 +134,29 @@ class TermImportBot extends GardeningBot {
 			//todo: language
 			return "Connecting the data access layer module $dalModule[0] failed."; 
 		}
+		$damId = $dalModule[0];
 
-		$source = $parser->serializeElement(array('DataSource'));
-		$importSets = $parser->serializeElement(array('ImportSets'));
+		$settingsXML = new SimpleXMLElement($settings);
+		$source = $settingsXML->xpath('//DataSource');
+		$source = $source[0]->asXML();
+		
+		$importSets = $parser->getValuesOfElement(array('ImportSets', 'ImportSet', 'Name'));
+		if(count($importSets) > 0){
+			$importSet = trim(''.$importSets[0]);
+		} else {
+			$importSet = '';
+		}
+		
 		$inputPolicy = $parser->serializeElement(array('InputPolicy'));
 		$conflictPolicy = $parser->serializeElement(array('ConflictPolicy'));
-		$mappingPolicy = $parser->serializeElement(array('MappingPolicy'));
-
+		$creationPattern = $parser->serializeElement(array('CreationPattern'));
+		
 		echo("\r\nGet Terms");
-		$terms = $dam->getTerms($source, $importSets, $inputPolicy, $conflictPolicy);
+		$terms = $dam->getTerms($source, $importSet, $inputPolicy, $conflictPolicy);
 		echo("\r\nTerms in place");
 		
 		try {
-			$result = $this->createArticles($terms, $mappingPolicy, $conflictPolicy, $dam,$termImportName);
+			$result = $this->createArticles($terms, $creationPattern, $conflictPolicy, $dam,$termImportName, $damId);
 			
 			echo "\r\nBot finished!\n";
 			if ($result === true) {
@@ -162,36 +169,58 @@ class TermImportBot extends GardeningBot {
 	}
 
 	/**
-	 * Creates articles for the terms according to the mapping and conflict policy.
+	 * Creates articles for the terms according to the creation pattern and conflict policy.
 	 */
-	private function createArticles($terms, $mappingPolicy, $conflictPolicy, $dam, $termImportName) {
+	private function createArticles($termsCollection, $creationPattern, $conflictPolicy, $dam, $termImportName, $damId) {
 		
 		echo("\r\nStart to create articles");
 
 		$log = SGAGardeningIssuesAccess::getGardeningIssuesAccess();
 		
-		$parser = new DIXMLParser($mappingPolicy);
-		$result = $parser->parse();
-		if ($result !== TRUE) {
-			return $result;
-		}
+		$parser = new DIXMLParser($creationPattern);
+		$templateName = '';
+		$extraCategories = '';
+		$delimiter = '';
+		if ($parser->parse() === TRUE) {
+			$templateName = $parser->getValuesOfElement(array('CreationPattern','TemplateName'));
+			if (is_array($templateName) && count($templateName) > 0){
+				$templateName = trim(strip_tags($templateName[0]));
+			} else {
+				$templateName = '';
+			}	 
 		
-		$mp = $parser->getValuesOfElement(array('MappingPolicy','page'));
-		if (!is_array($mp) || !$mp[0]) {
-			return wfMsg('smw_ti_missing_mp');
+			$extraCategories = $parser->getValuesOfElement(array('CreationPattern','ExtraCategories'));
+			if (is_array($extraCategories) && count($extraCategories) > 0){
+				$extraCategories = trim(strip_tags($extraCategories[0]));
+			} else {
+				$extraCategories= '';
+			}
+		
+			$delimiter = $parser->getValuesOfElement(array('CreationPattern','Delimiter'));
+			if (is_array($delimiter) && count($delimiter) > 0){
+				$delimiter = trim(strip_tags($delimiter[0]));
+			} else {
+				$delimiter= '';
+			}
 		}
-		$mp = strip_tags($mp[0]);
 		
 		$parser = new DIXMLParser($conflictPolicy);
-		$result = $parser->parse();
-		if ($result !== TRUE) {
-			return $result;
+		$cp = 'overwrite';
+		if ($parser->parse() === TRUE) {
+			$cp = $parser->getValuesOfElement(array('ConflictPolicy','Name'));
+			$cp = $cp[0];
 		}
-		$cp = $parser->getValuesOfElement(array('ConflictPolicy','overwriteExistingTerms'));
-		$cp = $cp[0];
-		$cp = strtolower($cp) == 'true' ? true : false;
-
-		$terms = $terms->getTerms();
+		
+		global $ditigConflictPolicies;
+		$cp = $ditigConflictPolicies[$cp];
+		$cp = new $cp();
+		
+		$overwriteExistingArticles = false;
+		if($cp == 'ignore'){
+			$overwriteExistingArticles = false;
+		}
+		
+		$terms = $termsCollection->getTerms();
 		$numTerms = count($terms);
 		echo("\r\nNumber of terms: ".$numTerms."\n");
 		$this->setNumberOfTasks(1);
@@ -205,12 +234,12 @@ class TermImportBot extends GardeningBot {
 			//deal with callbacks
 			foreach($term->getCallbacks() as $callback){
 				list($callBackSucces, $logMsgs) = $dam->executeCallback(
-					$callback, $mp ,$cp, $termImportName);
+					$callback, $templateName, $extraCategories, $delimiter, $overwriteExistingArticles, $termImportName);
 				
 				foreach($logMsgs as $logMsg){
 					$log->addGardeningIssueAboutArticle(
-						$this->id, $logMsg->id, 
-						Title::newFromText($$logMsg->title));
+						$this->id, $logMsg['id'], 
+						Title::newFromText($logMsg['title']));
 				}
 				
 				if(!$callBackSucces){
@@ -220,7 +249,8 @@ class TermImportBot extends GardeningBot {
 			
 			//import new term if this is not an anonymous callback term
 			if(!$term->isAnnonymousCallbackTerm()){
-				$caResult = $this->createArticle($term, $mp, $cp, $termImportName);
+				
+				$caResult = $this->createArticle($term, $templateName, $extraCategories, $delimiter, $cp, $termImportName, $damId);
 				$this->worked(1);
 	
 				if ($caResult !== true) {
@@ -232,6 +262,10 @@ class TermImportBot extends GardeningBot {
 			}
 		}
 		
+		foreach($termsCollection->getErrorMsgs() as $msg){
+			$this->importErrors[] = $msg;
+		}
+		
 		if($noErrors){
 			return wfMsg('smw_ti_import_successful');
 		} else {
@@ -240,21 +274,10 @@ class TermImportBot extends GardeningBot {
 	}
 
 	/**
-	 * Creates an article for the given term according to the mapping and
-	 * conflict policy. The special ontology properties that can be defined for
-	 * terms (sub-category etc.) are considered and used for creating corresponding
-	 * annotations.
-	 *
-	 * @param DITerm
-	 * @param string $mappingPolicy : name of teh mapping tempplate
-	 * @param boolean $overwriteExistingArticle
-	 * 		Specifies, if existing articles will be overwritten:
-	 * 		<true> => overwrite, <false> => skip article
-	 * @return mixed (boolean, string)
-	 * 		<true>, if the term was successfully imported or an
-	 * 		error message, otherwise.
+	 * Creates an article for the given term according to the creation pattern and
+	 * conflict policy
 	 */
-	private function createArticle(&$term, $mappingPolicy, $overwriteExistingArticle, $termImportName) {
+	private function createArticle($term, $templateName, $extraCategories, $delimiter, $conflictPolicy, $termImportName, $damId) {
 		
 		$log = SGAGardeningIssuesAccess::getGardeningIssuesAccess();
 
@@ -275,169 +298,40 @@ class TermImportBot extends GardeningBot {
 			return wfMsg('smw_ti_invalid_articlename', $title);
 		}
 
-		// Create the ontological properties
-		list($ontoAnno, $namespace) = $this->createOntologyAnnotations($term);
-
-		$title = Title::newFromText($namespace.$title);
-		$article = new Article($title);
-
-		$updated = false;
-		// Check if the article already exists
-		$termAnnotations = $this->getExistingTermAnnotations($title);
+		$title = Title::newFromText($title);
 		
-		if ($article->exists()) {
-			// The article exists
-			// Can an existing article be overwritten?
-			if (!$overwriteExistingArticle) {
-				echo wfMsg("\r\n".'smw_ti_articleNotUpdated', $title)."\n";
-				$log->addGardeningIssueAboutArticle($this->id, SMW_GARDISSUE_UPDATE_SKIPPED, $title);
-				
-				$termAnnotations['ignored'][] = $termImportName;
-				$termAnnotations = "\n\n\n"
-					.$this->createTermAnnotations($termAnnotations);
-				$article->doEdit(
-					$article->getContent().$termAnnotations, wfMsg('smw_ti_creationComment'));
-				
-				return true;
+		//check if this is a valid title
+		if(true || is_null($title)){
+			$title = $term->getSaferArticleName();
+			$title = Title::newFromText($title);
+
+			if (is_null($title)) {
+				echo("\r\n".wfMsg('smw_ti_invalid_articlename', $term->getArticleName()));
+				$log->addGardeningIssueAboutArticle(
+					$this->id, SMW_GARDISSUE_MISSING_ARTICLE_NAME,
+					Title::newFromText(wfMsg('smw_ti_import_error')));
+				return wfMsg('smw_ti_invalid_articlename', $term->getSaferArticleName());
 			}
-			$updated = true;
 		}
 		
-		if($updated){
-			$termAnnotations['updated'][] = $termImportName;  
-		} else {
-			$termAnnotations['added'][] = $termImportName;
-		}
-		$termAnnotations = "\n\n\n".$this->createTermAnnotations($termAnnotations);
-
-		// Create the content of the article based on the mapping policy
-		$content = $this->createContent($term, $mappingPolicy);
-
-		if (!empty($ontoAnno)) {
-			$content .= "\n\n".$ontoAnno;
-		}
-
-		// Create/update the article
-		$success = $article->doEdit($content.$termAnnotations, wfMsg('smw_ti_creationComment'));
-		if (!$success) {
-			$log->addGardeningIssueAboutArticle($this->id, SMW_GARDISSUE_CREATION_FAILED, $title);
-			return wfMsg('smw_ti_creationFailed', $title);
-		}
-
-		echo "\r\nArticle ".$title->getFullText();
-		echo $updated==true ? " updated\n" : " created.\n";
-		$log->addGardeningIssueAboutArticle(
-			$this->id,
-			$updated == true ? SMW_GARDISSUE_UPDATED_ARTICLE
-			: SMW_GARDISSUE_ADDED_ARTICLE,
-		$title);
-
-		return true;
-	}
-
-	/**
-	 * Creates the content of an article based on the description of the term and
-	 * the mapping policy.
-	 * The method calls itself recursively. The further parameters ($offset,
-	 * $replace and $level) are only used in the recursion.
-	 *
-	 * @param DITerm
-	 * @param string $mappingPolicy: name of the mapping template
-	 *
-	 * @return string : the content 
-	 */
-	public function createContent($term, $mappingPolicy) {
-		$result = '';
-		
-		//todo deal with syntax errors because of invalid characters
-		
-		//todo: use display templates
-		
-		if(trim($mappingPolicy) == ''){
-			foreach($term->getProperties() as $property => $value){
-				$result .= '[['.$property.'::'.$value."| ]]";
-			}
-		}else {
-			$result = '{{'.$mappingPolicy."\n";;
-			foreach($term->getProperties() as $property => $value){
-				$result .= '|'.$property.' = '. $value."\n";
-			}
-			$result .= "}}"."\n";
-		}
-		
-		return $result;
-	}
-
-	/**
-	 * A term may contain ontological properties. These are converted to
-	 * annotations in form of wiki text or namespaces.
-	 *
-	 * The following mapping is applied from ontological properties to wiki:
-	 * isCategory => Namespace: Category (language dependent)
-	 * isProperty => Namespace: Property (language dependent)
-	 * isOfCategory(cat) => [[Category:cat]]
-	 * isSubCategoryOf(superCat) => Namespace: Category and [[Category:superCat]]
-	 * isSubPropertyOf(superProp) => Namespace: Property and
-	 *                               [[subproperty of::Property:superProp]]
-	 *
-	 * @param DITerm
-	 *
-	 * @return array(string, string)
-	 * 		-The wiki text of the annotations.
-	 *      -The namespace (Category, Property)
-	 *
-	 */
-	private function createOntologyAnnotations(&$term) {
-		global $wgLang, $smwgContLang;
-
-		$anno = '';
-		$namespace = '';
-
-		$isCat = $term->getPropertyValue('ISCATEGORY');
-		$isProp = $term->getPropertyValue('ISPROPERTY');
-		$cat = $term->getPropertyValue('ISOFCATEGORY');
-		$subCatOf  = $term->getPropertyValue('ISSUBCATEGORYOF');
-		$subPropOf = $term->getPropertyValue('ISSUBPROPERTYOF');
-
-		if ($isCat) {
-			$namespace = $wgLang->getNsText(NS_CATEGORY).':';
-		}
-		if ($isProp) {
-			$namespace = $wgLang->getNsText(SMW_NS_PROPERTY).':';
-		}
-		if ($cat) {
-			$anno .= '[['.$wgLang->getNsText(NS_CATEGORY).':'.$cat[0]['value']."]]\n";
-		}
-		if ($subCatOf) {
-			$namespace = $wgLang->getNsText(NS_CATEGORY).':';
-			$anno .= '[['.$wgLang->getNsText(NS_CATEGORY).':'.$subCatOf[0]['value']."]]\n";
-		}
-		if ($subPropOf) {
-			$specialProperties = $smwgContLang->getPropertyLabels();
-
-			$namespace = $wgLang->getNsText(SMW_NS_PROPERTY).':';
-			$anno .= '[['.$specialProperties["_SUBP"].':'
-			.$wgLang->getNsText(SMW_NS_PROPERTY).':'.$subPropOf[0]['value']."]]\n";
-		}
-
-		$result = array($anno, $namespace);
-
+		$result = $conflictPolicy->createArticle(
+			$term, $templateName, $extraCategories, $delimiter, $title, $termImportName, $log, $this->id, $damId);
 		return $result;
 	}
 
 	private function createTermImportResultContent($termImportName){
 		$result = "__NOTOC__\n";
 		$result .= "==== Import summary ====";
-		$result .= "\nTerm Import definition: [[belongsToTermImport::TermImport:".$termImportName."|"
-			.$termImportName."]]"." [[belongsToTermImportWithLabel::".$termImportName."| ]]";
-		$result .= "\nImport date: [[hasImportDate::";
+		$result .= "\n\nTerm Import definition: [[belongsToTermImport::TermImport:".$termImportName."|"
+			.$termImportName."]]"." [[BelongsToTermImportWithLabel::".$termImportName."| ]]";
+		$result .= "\n\nImport date: [[hasImportDate::";
 		$result .= $this->getDateString()."]]";
 			
 		
 		if(count($this->importErrors) > 0){
-			$result .= "\nResult: Some errors occured.[[wasImportedSuccessfully::false| ]] (Please see errors below.)";
+			$result .= "\n\nResult: Some errors occured.[[wasImportedSuccessfully::false| ]] (Please see errors below.)";
 		} else {
-			$result .= "\nResult: Term import has been completed successfully.[[wasImportedSuccessfully::true| ]]";
+			$result .= "\n\nResult: Term import has been completed successfully.[[wasImportedSuccessfully::true| ]]";
 		}
 		$result .= "\n==== Added terms ====\n";
 		$result .= "{{#ask: [[WasAddedDuringTermImport::TermImport:".$termImportName."/"
@@ -468,12 +362,12 @@ class TermImportBot extends GardeningBot {
 	private function createTermImportResultContentPreview($termImportName){
 		$result = "__NOTOC__\n";
 		$result .= "==== Import summary ====";
-		$result .= "\nTerm Import definition: [[belongsToTermImport::TermImport:".$termImportName."|"
+		$result .= "\n\nTerm Import definition: [[belongsToTermImport::TermImport:".$termImportName."|"
 			.$termImportName."]]"." [[belongsToTermImportWithLabel::".$termImportName."| ]]";
-		$result .= "\nImport date: [[hasImportDate::";
+		$result .= "\n\nImport date: [[hasImportDate::";
 		$result .= $this->getDateString()."]]";
 			
-		$result .= "\nResult: Some errors occured.[[wasImportedSuccessfully::false| ]] (Check [[Special:Gardening]] if Term Import is finished.)";
+		$result .= "\n\nResult: Some errors occured.[[wasImportedSuccessfully::false| ]] (Check [[Special:Gardening]] if Term Import is finished.)";
 		
 		$result .= "\n==== Added terms ====\n";
 		$result .= "{{#ask: [[WasAddedDuringTermImport::TermImport:".$termImportName."/"
@@ -511,67 +405,6 @@ class TermImportBot extends GardeningBot {
 		}
 		return $this->dateString;
 	}
-	
-	/**
-	 * returns an array that contains already existing term import annotations
-	 * 
-	 * @param $title
-	 * @return array
-	 */
-	public function getExistingTermAnnotations($title){
-		$existingAnnotations = array();
-		$existingAnnotations['added'] = array();
-		$existingAnnotations['updated'] = array();
-		$existingAnnotations['ignored'] = array();
-
-		if($title == null){
-			return $existingAnnotations;
-		}
-		
-		if($title->exists()){
-			$semdata = smwfGetStore()->
-				getSemanticData(SMWDIWikiPage::newFromTitle($title));
-
-			$property = SMWDIProperty::newFromUserLabel('WasAddedDuringTermImport');
-			$values = $semdata->getPropertyValues($property);
-			foreach($values as $value){
-				$existingAnnotations['updated'][] = 
-					SMWDataValueFactory::newDataItemValue($value, null)->getShortWikiText();
-			}
-			
-			$property = SMWDIProperty::newFromUserLabel('WasIgnoredDuringTermImport');
-			$values = $semdata->getPropertyValues($property);
-			foreach($values as $value){
-				$existingAnnotations['ignored'][] = 
-					SMWDataValueFactory::newDataItemValue($value, null)->getShortWikiText();
-			}
-		}
-		
-		return $existingAnnotations;
-	}
-	
-	/**
-	 * Returns the annotations which can be added to a term
-	 * 
-	 * @param $annotations
-	 * @return string
-	 */
-	public function createTermAnnotations($annotations){
-		$result = "";
-		foreach($annotations['added'] as $annotation){
-			$result .= "[[wasAddedDuringTermImport::".$annotation."| ]] ";
-		}
-		
-		foreach($annotations['updated'] as $annotation){
-			$result .= "[[wasUpdatedDuringTermImport::".$annotation."| ]] ";
-		}
-		
-		foreach($annotations['ignored'] as $annotation){
-			$result .= "[[wasIgnoredDuringTermImport::".$annotation."| ]] ";
-		}
-		return trim($result);
-	}
-
 }
 
 define('SMW_TERMIMPORT_BOT_BASE', 2200);
@@ -580,7 +413,6 @@ define('SMW_GARDISSUE_UPDATED_ARTICLE', (SMW_TERMIMPORT_BOT_BASE+1) * 100 + 2);
 define('SMW_GARDISSUE_MISSING_ARTICLE_NAME', (SMW_TERMIMPORT_BOT_BASE+2) * 100 + 3);
 define('SMW_GARDISSUE_CREATION_FAILED', (SMW_TERMIMPORT_BOT_BASE+3) * 100 + 4);
 define('SMW_GARDISSUE_UPDATE_SKIPPED', (SMW_TERMIMPORT_BOT_BASE+4) * 100 + 5);
-define('SMW_GARDISSUE_MAPPINGPOLICY_MISSING', (SMW_TERMIMPORT_BOT_BASE+5) * 100 + 6);
 
 class TermImportBotIssue extends GardeningIssue {
 
@@ -600,9 +432,7 @@ class TermImportBotIssue extends GardeningIssue {
 				return wfMsg('smw_ti_creation_failed', $text1);
 			case SMW_GARDISSUE_UPDATE_SKIPPED:
 				return wfMsg('smw_ti_articleNotUpdated', $text1);
-			case SMW_GARDISSUE_MAPPINGPOLICY_MISSING:
-				return wfMsg('smw_ti_mappingpolicy_missing', $text1);
-
+			
 			default: return NULL;
 
 		}
