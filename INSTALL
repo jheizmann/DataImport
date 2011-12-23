@@ -1,0 +1,68 @@
+Installation instructions
+-------------------------
+
+Install instructions for the latest version of the Data Import Extension are also online:
+	http://smwforum.ontoprise.com/smwforum/index.php/Help:Enabling_the_Data_Import_Extension
+ 
+For the full manual of the Data Import Extension have a look at:
+	http://smwforum.ontoprise.com/smwforum/index.php/Help:Data_Import_Extension
+
+Requirements: 
+=============
+
+ 	Apache HTTP Server
+ 	MySQL higher than 4.0.14 (Recommended MySQL 5.x)
+ 	PHP 5.2.x (PHP 5.3.x is not supported yet)
+ 	MediaWiki 1.15.x (see installation guide)
+	Semantic MediaWiki 1.5.1
+    Halo extension 1.5.1 or higher
+    Semantic Gardening extension 1.3.2 or higher
+    Script Manager 1.0 or higher
+    ARCLibrary 1.0 or higher
+    OPTIONAL: Linked Data Extension 1.0 (This is only required if you want to use the Triplification Extension)
+    OPTIONAL: Triple Store Connector (This is only required if you want to use the Triplification Extension)
+    
+    You also must activate the following two PHP extensions in your 
+    php.ini if you want to use the POP3 import feature of the Term Import
+    Framework.
+    extension=php_imap.dll
+    extension=php_mime_magic.dll (only required if PHP < 5.3.3)
+	
+
+Installation:
+=============
+
+The easiest way to install ASF is using the deployment framework:
+
+	smwadmin -i dataimport
+
+That's it.
+
+
+If you want to install Data Import manually, then do the following:
+
+(1) Extract the DataImport folder into the extension directory of MediaWiki
+
+(2) Add to your LocalSettings.php: (After the Halo and the 
+Semantic Gardening extensions were initialized)
+	
+	include_once('extensions/DataImport/includes/DI_Initialize.php');
+	enableDataImportExtension();
+	
+(3) Login as WikiSysop, go to the special page "Special:SMWAdmin" and 
+run the "Initialize or update tables" script. (please do that also if you are
+updating the Data Import extension.)
+
+(4)) That's it.
+
+
+Install the Inter Wiki Article Importer (Optional)
+=============
+
+(1) Add the following two lines to your LocalSettings.php (After Data Import has been initialized.)
+
+	include_once('extensions/DataImport/IAI/includes/IAI_Initialize.php');
+	enableIAI();
+
+
+
