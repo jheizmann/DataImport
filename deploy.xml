@@ -4,7 +4,7 @@
 		<id>dataimport</id>
 		<title>Data Import extension</title>
 		<version>1.4.4</version>
-		<patchlevel>5</patchlevel>
+		<patchlevel>6</patchlevel>
 		<vendor>ontoprise GmbH</vendor>
 		<maintainer>ontoprise GmbH</maintainer>
 		<instdir>extensions/DataImport</instdir>
